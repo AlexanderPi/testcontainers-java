@@ -1,14 +1,14 @@
 package org.testcontainers.dockerclient;
 
-import com.github.dockerjava.core.DockerClientConfig;
+import com.spotify.docker.client.DefaultDockerClient;
 
 public class DockerClientConfigUtils {
-    public static String getDockerHostIpAddress(DockerClientConfig config) {
-        switch (config.getUri().getScheme()) {
+    public static String getDockerHostIpAddress(DefaultDockerClient.Builder config) {
+        switch (config.uri().getScheme()) {
         case "http":
         case "https":
         case "tcp":
-            return config.getUri().getHost();
+            return config.uri().getHost();
         case "unix":
             return "localhost";
         default:

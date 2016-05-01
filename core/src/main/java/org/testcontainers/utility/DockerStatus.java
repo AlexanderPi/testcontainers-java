@@ -1,10 +1,11 @@
 package org.testcontainers.utility;
 
-import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.spotify.docker.client.messages.ContainerState;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.Date;
 
 /**
  * Utility functions for dealing with docker status based on the information available to us, and trying to be
@@ -33,15 +34,15 @@ public class DockerStatus {
      * @param now                    the time to consider as the current time
      * @return true if we can conclude that the container is running, false otherwise
      */
-    public static boolean isContainerRunning(InspectContainerResponse.ContainerState state,
+    public static boolean isContainerRunning(ContainerState state,
                                              Duration minimumRunningDuration,
                                              Instant now) {
-        if (state.isRunning()) {
+        if (state.running()) {
             if (minimumRunningDuration == null) {
                 return true;
             }
             Instant startedAt = DateTimeFormatter.ISO_INSTANT.parse(
-                state.getStartedAt(), Instant::from);
+                state.startedAt(), Instant::from);
 
             if (startedAt.isBefore(now.minus(minimumRunningDuration))) {
                 return true;
@@ -56,27 +57,25 @@ public class DockerStatus {
      * @param state the state provided by InspectContainer
      * @return true if we can conclude that the container has started but is now stopped, false otherwise.
      */
-    public static boolean isContainerStopped(InspectContainerResponse.ContainerState state) {
+    public static boolean isContainerStopped(ContainerState state) {
 
         // get some preconditions out of the way
-        if (state.isRunning() || state.isPaused()) {
+        if (state.running() || state.paused()) {
             return false;
         }
 
         // if the finished timestamp is non-empty, that means the container started and finished.
-        if (!isDockerTimestampEmpty(state.getStartedAt()) && !isDockerTimestampEmpty(state.getFinishedAt())) {
+        if (!isDockerTimestampEmpty(state.startedAt()) && !isDockerTimestampEmpty(state.finishedAt())) {
             return true;
         }
         return false;
     }
 
-    public static boolean isDockerTimestampEmpty(String dockerTimestamp) {
+    public static boolean isDockerTimestampEmpty(Date dockerTimestamp) {
         // This is a defensive approach. Current versions of Docker use the DOCKER_TIMESTAMP_ZERO value, but
         // that could change.
         return dockerTimestamp == null
-            || dockerTimestamp.isEmpty()
-            || dockerTimestamp.equals(DOCKER_TIMESTAMP_ZERO)
-            || DateTimeFormatter.ISO_INSTANT.parse(dockerTimestamp, Instant::from).getEpochSecond() < 0L;
+            || dockerTimestamp.getTime() == 0;
     }
 
 }

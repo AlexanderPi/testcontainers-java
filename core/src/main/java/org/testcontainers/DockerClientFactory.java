@@ -1,24 +1,15 @@
 package org.testcontainers;
 
-import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.InternalServerErrorException;
-import com.github.dockerjava.api.NotFoundException;
-import com.github.dockerjava.api.command.CreateContainerResponse;
-import com.github.dockerjava.api.model.Frame;
-import com.github.dockerjava.api.model.Image;
-import com.github.dockerjava.core.DockerClientBuilder;
-import com.github.dockerjava.core.DockerClientConfig;
-import com.github.dockerjava.core.command.LogContainerResultCallback;
-import com.github.dockerjava.core.command.PullImageResultCallback;
+import com.spotify.docker.client.*;
+import com.spotify.docker.client.messages.ContainerConfig;
+import com.spotify.docker.client.messages.ContainerCreation;
+import com.spotify.docker.client.messages.ProgressMessage;
 import lombok.Synchronized;
 import org.slf4j.Logger;
-import org.testcontainers.dockerclient.DockerClientConfigUtils;
-import org.testcontainers.dockerclient.DockerConfigurationStrategy;
-import org.testcontainers.dockerclient.DockerMachineConfigurationStrategy;
-import org.testcontainers.dockerclient.EnvironmentAndSystemPropertyConfigurationStrategy;
-import org.testcontainers.dockerclient.UnixSocketConfigurationStrategy;
+import org.testcontainers.dockerclient.*;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 import static java.util.Arrays.asList;
 import static org.slf4j.LoggerFactory.getLogger;
@@ -33,8 +24,8 @@ public class DockerClientFactory {
     private static DockerClientFactory instance;
     private static final Logger LOGGER = getLogger(DockerClientFactory.class);
 
-    // Cached client configuration
-    private DockerClientConfig config;
+    // Cached client builder
+    private DefaultDockerClient.Builder config;
     private boolean preconditionsChecked = false;
 
     private static final List<DockerConfigurationStrategy> CONFIGURATION_STRATEGIES =
@@ -77,22 +68,27 @@ public class DockerClientFactory {
      */
     @Synchronized
     public DockerClient client(boolean failFast) {
-        if (config == null) {
-            config = DockerConfigurationStrategy.getFirstValidConfig(CONFIGURATION_STRATEGIES);
-        }
+        DockerClient client = null;
+        try {
+            if (config == null) {
+                config = DockerConfigurationStrategy.getFirstValidConfig(CONFIGURATION_STRATEGIES);
+            }
 
-        DockerClient client = DockerClientBuilder.getInstance(config).build();
+            client = config.build();
 
-        if (!preconditionsChecked) {
-            String version = client.versionCmd().exec().getVersion();
-            checkVersion(version);
-            checkDiskSpaceAndHandleExceptions(client);
-            preconditionsChecked = true;
-        }
+            if (!preconditionsChecked) {
+                String version = client.version().version();
+                checkVersion(version);
+                checkDiskSpaceAndHandleExceptions(client);
+                preconditionsChecked = true;
+            }
 
-        if (failFast) {
-            // Ping, to fail fast if our docker environment has gone away
-            client.pingCmd().exec();
+            if (failFast) {
+                // Ping, to fail fast if our docker environment has gone away
+                client.ping();
+            }
+        } catch (DockerException | InterruptedException e) {
+            throw new RuntimeException(e); // TODO
         }
 
         return client;
@@ -102,7 +98,7 @@ public class DockerClientFactory {
      * @param config docker client configuration to extract the host IP address from
      * @return the IP address of the host running Docker
      */
-    private String dockerHostIpAddress(DockerClientConfig config) {
+    private String dockerHostIpAddress(DefaultDockerClient.Builder config) {
         return DockerClientConfigUtils.getDockerHostIpAddress(config);
     }
 
@@ -134,25 +130,34 @@ public class DockerClientFactory {
      * Check whether this docker installation is likely to have disk space problems
      * @param client an active Docker client
      */
-    private void checkDiskSpace(DockerClient client) {
+    private void checkDiskSpace(DockerClient client) throws DockerException, InterruptedException {
 
-        List<Image> images = client.listImagesCmd().exec();
-        if (!images.stream().anyMatch(it -> asList(it.getRepoTags()).contains("alpine:3.2"))) {
-            PullImageResultCallback callback = client.pullImageCmd("alpine:3.2").exec(new PullImageResultCallback());
-            callback.awaitSuccess();
+        List<com.spotify.docker.client.messages.Image> images = client.listImages();
+        if (!images.stream().anyMatch(it -> it.repoTags().contains("alpine:3.2"))) {
+            final CountDownLatch latch = new CountDownLatch(1);
+            client.pull("alpine:3.2", new ProgressHandler() {
+                @Override
+                public void progress(ProgressMessage message) throws DockerException {
+                    latch.countDown();
+                }
+            });
+            latch.await();
         }
 
-        CreateContainerResponse createContainerResponse = client.createContainerCmd("alpine:3.2").withCmd("df", "-P").exec();
-        String id = createContainerResponse.getId();
+        ContainerConfig containerConfig = ContainerConfig.builder()
+                .image("alpine:3.2")
+                .cmd("df", "-P")
+                .build();
+        ContainerCreation container = client.createContainer(containerConfig);
+        String id = container.id();
 
-        client.startContainerCmd(id).exec();
+        client.startContainer(id);
+        client.waitContainer(id);
 
-        client.waitContainerCmd(id).exec();
+        LogStream logStream = client.logs(id, DockerClient.LogsParameter.STDOUT);
 
-        LogContainerResultCallback callback = client.logContainerCmd(id).withStdOut().exec(new LogContainerCallback());
         try {
-            callback.awaitCompletion();
-            String logResults = callback.toString();
+            String logResults = logStream.readFully();
 
             int availableKB = 0;
             int use = 0;
@@ -172,12 +177,10 @@ public class DockerClientFactory {
                 LOGGER.error("Docker environment has less than 2GB free - execution is unlikely to succeed so will be aborted.");
                 throw new NotEnoughDiskSpaceException("Not enough disk space in Docker environment");
             }
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
         } finally {
             try {
-                client.removeContainerCmd(id).withRemoveVolumes(true).withForce(true).exec();
-            } catch (NotFoundException | InternalServerErrorException ignored) {
+                client.removeContainer(id, true);
+            } catch (DockerException | InterruptedException ignored) {
 
             }
         }
@@ -190,17 +193,3 @@ public class DockerClientFactory {
     }
 }
 
-class LogContainerCallback extends LogContainerResultCallback {
-    private final StringBuffer log = new StringBuffer();
-
-    @Override
-    public void onNext(Frame frame) {
-        log.append(new String(frame.getPayload()));
-        super.onNext(frame);
-    }
-
-    @Override
-    public String toString() {
-        return log.toString();
-    }
-}

@@ -1,6 +1,6 @@
 package org.testcontainers.dockerclient;
 
-import com.github.dockerjava.core.DockerClientConfig;
+import com.spotify.docker.client.DefaultDockerClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,7 +17,7 @@ public interface DockerConfigurationStrategy {
      * @return a usable, tested, Docker client configuration for the host system environment
      * @throws InvalidConfigurationException if this strategy fails
      */
-    DockerClientConfig provideConfiguration() throws InvalidConfigurationException;
+    DefaultDockerClient.Builder provideConfiguration() throws InvalidConfigurationException;
 
     /**
      * @return a short textual description of the strategy
@@ -31,7 +31,7 @@ public interface DockerConfigurationStrategy {
      *
      * @return a working DockerClientConfig, as determined by successful execution of a ping command
      */
-    static DockerClientConfig getFirstValidConfig(List<DockerConfigurationStrategy> strategies) {
+    static DefaultDockerClient.Builder getFirstValidConfig(List<DockerConfigurationStrategy> strategies) {
         Map<DockerConfigurationStrategy, Exception> configurationFailures = new LinkedHashMap<>();
 
         for (DockerConfigurationStrategy strategy : strategies) {

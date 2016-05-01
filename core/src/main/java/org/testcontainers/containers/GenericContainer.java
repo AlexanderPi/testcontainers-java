@@ -1,19 +1,16 @@
 package org.testcontainers.containers;
 
-import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.DockerException;
-import com.github.dockerjava.api.command.CreateContainerCmd;
-import com.github.dockerjava.api.command.ExecCreateCmdResponse;
-import com.github.dockerjava.api.command.InspectContainerResponse;
-import com.github.dockerjava.api.command.LogContainerCmd;
-import com.github.dockerjava.api.model.*;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-
+import com.spotify.docker.client.DockerClient;
+import com.spotify.docker.client.DockerException;
+import com.spotify.docker.client.messages.ContainerConfig;
+import com.spotify.docker.client.messages.ContainerInfo;
+import com.spotify.docker.client.messages.HostConfig;
+import com.spotify.docker.client.messages.PortBinding;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NonNull;
-
 import org.jetbrains.annotations.Nullable;
 import org.junit.runner.Description;
 import org.rnorth.ducttape.ratelimits.RateLimiter;
@@ -118,7 +115,7 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
     protected WaitStrategy waitStrategy = Wait.defaultWaitStrategy();
 
     @Nullable
-    private InspectContainerResponse containerInfo;
+    private ContainerInfo containerInfo;
 
 
     private static final Set<String> AVAILABLE_IMAGE_NAME_CACHE = new HashSet<>();
@@ -172,7 +169,7 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
 
             logger().info("Creating container for image: {}", dockerImageName);
             profiler.start("Create container");
-            CreateContainerCmd createCommand = dockerClient.createContainerCmd(dockerImageName);
+            ContainerConfig.Builder createCommand = ContainerConfig.builder();
             applyConfiguration(createCommand);
             containerId = createCommand.exec().getId();
             ContainerReaper.instance().registerContainerForCleanup(containerId, dockerImageName);
@@ -185,8 +182,8 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
 
             // Tell subclasses that we're starting
             profiler.start("Inspecting container");
-            containerInfo = dockerClient.inspectContainerCmd(containerId).exec();
-            containerName = containerInfo.getName();
+            containerInfo = dockerClient.inspectContainer(containerId);
+            containerName = containerInfo.name();
             profiler.start("Call containerIsStarting on subclasses");
             containerIsStarting(containerInfo);
 
@@ -199,15 +196,15 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
                     // record "now" before fetching status; otherwise the time to fetch the status
                     // will contribute to how long the container has been running.
                     Instant now = Instant.now();
-                    InspectContainerResponse inspectionResponse = dockerClient.inspectContainerCmd(containerId).exec();
+                    ContainerInfo inspectionResponse = dockerClient.inspectContainer(containerId);
 
                     if (DockerStatus.isContainerRunning(
-                            inspectionResponse.getState(),
+                            inspectionResponse.state(),
                             minimumRunningDuration,
                             now)) {
                         startedOK[0] = true;
                         return true;
-                    } else if (DockerStatus.isContainerStopped(inspectionResponse.getState())) {
+                    } else if (DockerStatus.isContainerStopped(inspectionResponse.state())) {
                         startedOK[0] = false;
                         return true;
                     }
@@ -294,11 +291,11 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
     }
 
     @SuppressWarnings({"EmptyMethod", "UnusedParameters"})
-    protected void containerIsStarting(InspectContainerResponse containerInfo) {
+    protected void containerIsStarting(ContainerInfo containerInfo) {
     }
 
     @SuppressWarnings({"EmptyMethod", "UnusedParameters"})
-    protected void containerIsStarted(InspectContainerResponse containerInfo) {
+    protected void containerIsStarted(ContainerInfo containerInfo) {
     }
 
     /**
@@ -314,45 +311,41 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
         }
     }
 
-    private void applyConfiguration(CreateContainerCmd createCommand) {
+    private void applyConfiguration(ContainerConfig.Builder createCommand) {
 
         // Set up exposed ports (where there are no host port bindings defined)
-        ExposedPort[] portArray = exposedPorts.stream()
-                .map(ExposedPort::new)
-                .toArray(ExposedPort[]::new);
+        Set<String> exposedPortsStrings = exposedPorts.stream()
+                .map(String::valueOf)
+                .collect(Collectors.toSet());
 
-        createCommand.withExposedPorts(portArray);
+        createCommand.exposedPorts(exposedPortsStrings);
 
         // Set up exposed ports that need host port bindings
-        PortBinding[] portBindingArray = portBindings.stream()
-                .map(PortBinding::parse)
-                .toArray(PortBinding[]::new);
-
-        createCommand.withPortBindings(portBindingArray);
+        createCommand.portSpecs(portBindings);
 
         if (commandParts != null) {
-            createCommand.withCmd(commandParts);
+            createCommand.cmd(commandParts);
         }
 
-        String[] envArray = env.stream()
-                .toArray(String[]::new);
-        createCommand.withEnv(envArray);
+        createCommand.env(env);
 
-        Bind[] bindsArray = binds.stream()
-                .toArray(Bind[]::new);
-        createCommand.withBinds(bindsArray);
 
-        Link[] linksArray = linkedContainers.entrySet().stream()
-                .map(entry -> new Link(entry.getValue().getContainerName(), entry.getKey()))
-                .collect(Collectors.toList())
-                .toArray(new Link[linkedContainers.size()]);
-        createCommand.withLinks(linksArray);
+// TODO
+//        Bind[] bindsArray = binds.stream()
+//                .toArray(Bind[]::new);
+//        createCommand.withBinds(bindsArray);
 
-        createCommand.withPublishAllPorts(true);
+//        Link[] linksArray = linkedContainers.entrySet().stream()
+//                .map(entry -> new Link(entry.getValue().getContainerName(), entry.getKey()))
+//                .collect(Collectors.toList())
+//                .toArray(new Link[linkedContainers.size()]);
+//        createCommand.withLinks(linksArray);
 
-        String[] extraHostsArray = extraHosts.stream()
-        		 .toArray(String[]::new);
-        createCommand.withExtraHosts(extraHostsArray);
+//        createCommand.withPublishAllPorts(true);
+
+//        String[] extraHostsArray = extraHosts.stream()
+//        		 .toArray(String[]::new);
+//        createCommand.withExtraHosts(extraHostsArray);
     }
 
     /**
@@ -573,8 +566,8 @@ public class GenericContainer<SELF extends GenericContainer<SELF>>
     @Override
     public Boolean isRunning() {
         try {
-            return dockerClient.inspectContainerCmd(containerId).exec().getState().isRunning();
-        } catch (DockerException e) {
+            return dockerClient.inspectContainer(containerId).state().running();
+        } catch (DockerException | InterruptedException e) {
             return false;
         }
     }

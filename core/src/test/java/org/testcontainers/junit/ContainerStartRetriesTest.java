@@ -1,6 +1,7 @@
 package org.testcontainers.junit;
 
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.spotify.docker.client.messages.ContainerInfo;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -28,7 +29,7 @@ public class ContainerStartRetriesTest {
         }
 
         @Override
-        protected void containerIsStarting(InspectContainerResponse containerInfo) {
+        protected void containerIsStarting(ContainerInfo containerInfo) {
             if (firstAttempt) {
                 firstAttempt = false;
 
